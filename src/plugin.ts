@@ -1,54 +1,52 @@
-/**
- * This code was modified from the plugin-jwt implementation of the graphql-yoga library.
- */
-
 import { createGraphQLError, Plugin } from 'graphql-yoga';
-import { createClient } from 'redis';
-import { OIDC } from './oidc';
-import { OIDCToken } from './token';
+import { BetterAuthClientPlugin, createAuthClient } from 'better-auth/client';
+import { adminClient } from 'better-auth/client/plugins';
+import { GraphQLError } from 'graphql';
+import { BetterAuth } from './class';
 
-export type OIDCPluginOptions = OIDCPluginOptionsBase;
+export type BetterAuthPluginOptions = BetterAuthPluginOptionsBase;
 
 /**
- * Represents the options for the OIDC plugin.
+ * Configuration options for the BetterAuth plugin
  */
-export interface OIDCPluginOptionsBase {
+export interface BetterAuthPluginOptionsBase {
 	/**
-	 * The OIDC instance to use for token verification.
+	 * Base URL for the authentication service
+	 * @default process.env.BETTER_AUTH_URL
 	 */
-	oidc: OIDC;
+	baseURL?: string;
 
 	/**
-	 * The Redis client to use for caching token payloads.
+	 * Plugins to pass down to the Better Auth client
 	 */
-	redis: ReturnType<typeof createClient>;
+	plugins?: BetterAuthClientPlugin[];
 
 	/**
-	 * The field to use to extend the context with the token payload.
-	 * @default 'oidc'
+	 * Suppress warning about missing admin client when using roles
+	 * @default false
+	 */
+	suppressRoleWarning?: boolean;
+
+	/**
+	 * Field name used to extend GraphQL context with auth data
+	 * @default 'auth'
 	 */
 	extendContextField?: string;
 
 	/**
-	 * The prefix to use for the Redis cache keys.
-	 * @default 'tokens'
-	 */
-	cachePrefix?: string;
-
-	/**
-	 * The roles that are allowed to authenticate.
+	 * List of roles allowed to access the API
 	 * @default []
 	 */
 	allowedRoles?: string[];
 
 	/**
-	 * Specifies whether authentication is required.
+	 * Whether authentication is mandatory
 	 * @default false
 	 */
 	requireAuth?: boolean;
 
 	/**
-	 * The messages to use for different authentication errors.
+	 * Custom error messages for different auth scenarios
 	 */
 	messages?: {
 		invalidToken: string;
@@ -58,9 +56,9 @@ export interface OIDCPluginOptionsBase {
 	};
 
 	/**
-	 * A function that retrieves the token for authentication.
-	 * @param params - The parameters for token retrieval.
-	 * @returns A promise that resolves to the token or undefined, or the token itself, or undefined.
+	 * Custom token extraction function
+	 * @param params Request context parameters
+	 * @returns The extracted token or undefined
 	 */
 	getToken?: (params: {
 		request: Request;
@@ -70,19 +68,19 @@ export interface OIDCPluginOptionsBase {
 }
 
 /**
- * Initializes the OIDC plugin and returns a Plugin object.
+ * Creates and configures a BetterAuth plugin instance for GraphQL Yoga
  *
- * @param options - The options for configuring the OIDC plugin.
- * @returns A Plugin object that can be used with GraphQL Yoga.
+ * @param options - Plugin configuration options
+ * @returns Configured GraphQL Yoga plugin
  */
-export function useOIDC(options: OIDCPluginOptions): Plugin {
-	// Destructure the options object and assign default values
+export function useBetterAuth(options: BetterAuthPluginOptions): Plugin {
+	// Initialize options with defaults
 	const {
-		oidc,
-		redis,
-		extendContextField = 'oidc',
-		cachePrefix = 'tokens',
-		allowedRoles,
+		baseURL = process.env.BETTER_AUTH_URL,
+		plugins,
+		suppressRoleWarning = false,
+		extendContextField = 'auth',
+		allowedRoles = [],
 		requireAuth = false,
 		messages = {
 			invalidToken: 'The provided access token is invalid.',
@@ -94,86 +92,93 @@ export function useOIDC(options: OIDCPluginOptions): Plugin {
 		getToken = defaultGetToken
 	} = options;
 
-	// Create a WeakMap to store the token payload by request
-	const payloadByRequest = new WeakMap<Request, OIDCToken | string>();
+	// Store auth payloads mapped to their requests for persistence across hooks
+	const payloadByRequest = new WeakMap<Request, BetterAuth | string>();
+
+	// Security check: Warn about potential issues when using roles without admin client
+	if (
+		allowedRoles.length > 0 &&
+		!plugins?.find((plugin) => plugin.id === 'better-auth-client') &&
+		!suppressRoleWarning
+	) {
+		console.warn(
+			"\x1b[30;43m SECURITY ALERT \x1b[0m \x1b[33mThe 'allowedRoles' feature is enabled in the GraphQL Yoga plugin for Better Auth, but the admin client plugin is missing. This configuration could expose sensitive information. If this setup is intentional (e.g., you've added a custom 'role' field to the schema), you can suppress this warning by setting 'suppressRoleWarning' to true.\x1b[0m"
+		);
+	}
 
 	return {
 		async onRequestParse({ request, serverContext, url }) {
-			// Retrieve the token using the getToken function
 			const token = await getToken({ request, serverContext, url });
 
-			// Check if the token is not null
 			if (token != null) {
-				// Check if the token exists in the Redis cache
-				if (!(await redis.exists(`${cachePrefix}:${token}`))) {
-					try {
-						// Verify the token using the OIDC instance
-						const oidcToken = await oidc.jwt.verify(token);
-
-						if (!oidcToken.active) {
-							// If the token is not active, throw an unauthorized error
-							throw unauthorizedError(messages.invalidToken);
+				try {
+					// Initialize auth client with provided token
+					const client = createAuthClient({
+						baseURL,
+						plugins,
+						fetchOptions: {
+							auth: {
+								type: 'Bearer',
+								token: token
+							}
 						}
+					});
 
-						// Store the token content in the Redis cache
-						await redis.set(
-							`${cachePrefix}:${token}`,
-							JSON.stringify(oidcToken)
-						);
+					// Fetch and validate current session
+					const { data } = await client.getSession();
 
-						// Set the expiration time for the token content
-						await redis.expire(
-							`${cachePrefix}:${token}`,
-							oidcToken.exp - Math.floor(Date.now() / 1000)
-						);
-					} catch (ex) {
-						// If the token is invalid, throw an unauthorized error
+					if (!data?.session) {
 						throw unauthorizedError(messages.invalidToken);
 					}
-				}
 
-				// Retrieve the token content from the Redis cache
-				const ct = await redis.get(`${cachePrefix}:${token}`);
+					// Role-based access control check
+					if (allowedRoles?.length > 0) {
+						type UserWithRole = ReturnType<
+							typeof createAuthClient<{
+								plugins: [ReturnType<typeof adminClient>];
+							}>
+						>['$Infer']['Session']['user'];
 
-				// If the token is not found in the cache, throw an unauthorized error
-				if (!ct) {
-					throw unauthorizedError(messages.expiredToken);
-				}
+						const user = data.user as UserWithRole;
+						const userRole = user.role || 'user';
 
-				// Check if the token has the necessary roles
-				if (allowedRoles && allowedRoles.length > 0) {
-					const roles =
-						JSON.parse(ct)?.realm_access?.roles ||
-						JSON.parse(ct)?.groups;
-					if (
-						!roles.some((role: string) =>
-							allowedRoles.includes(role)
-						)
-					) {
-						throw unauthorizedError(messages.invalidPermissions);
+						if (!allowedRoles.includes(userRole)) {
+							throw unauthorizedError(
+								messages.invalidPermissions
+							);
+						}
 					}
-				}
 
-				// Store the token content in the payloadByRequest WeakMap
-				payloadByRequest.set(request, JSON.parse(ct));
-			} else {
-				// If authentication is required, throw an unauthorized error
-				if (requireAuth) {
-					throw unauthorizedError(messages.authRequired);
+					// Store authenticated session for context building
+					payloadByRequest.set(
+						request,
+						new BetterAuth({
+							client,
+							session: data.session,
+							user: data.user
+						})
+					);
+				} catch (ex) {
+					if (ex instanceof GraphQLError) {
+						throw ex;
+					}
+					throw unauthorizedError(messages.invalidToken);
 				}
+			} else if (requireAuth) {
+				throw unauthorizedError(messages.authRequired);
 			}
 		},
+
 		onContextBuilding({ context, extendContext }) {
-			// Check if the request object is available in the context
 			if (context.request == null) {
 				throw new Error(
 					'Request is not available on context! Make sure you use this plugin with GraphQL Yoga.'
 				);
 			}
-			// Retrieve the token payload from the WeakMap using the request object
+
+			// Extend context with auth data if available
 			const payload = payloadByRequest.get(context.request);
 			if (payload != null) {
-				// Extend the context with the token payload using the specified field name
 				extendContext({
 					[extendContextField]: payload
 				});
@@ -183,21 +188,20 @@ export function useOIDC(options: OIDCPluginOptions): Plugin {
 }
 
 /**
- * Creates a GraphQL error with the provided message and options.
+ * Creates a standardized GraphQL unauthorized error with 401 status code
  *
- * @param message - The error message.
- * @param options - Additional options for the error.
- * @returns The GraphQL error.
+ * @param message - Error message to display
+ * @param options - Additional GraphQL error options
+ * @returns GraphQL error instance
  */
 function unauthorizedError(
 	message: string,
 	options?: Parameters<typeof createGraphQLError>[1]
 ) {
-	// Create a GraphQL error with the provided message and options
 	return createGraphQLError(message, {
 		extensions: {
 			http: {
-				status: 401 // Set the HTTP status code to 401 (Unauthorized)
+				status: 401
 			}
 		},
 		...options
@@ -205,25 +209,22 @@ function unauthorizedError(
 }
 
 /**
- * Default implementation of the getToken function.
- * Extracts the token from the Authorization header of the request.
- * Currently, only supports the Bearer token type.
- * @param request - The request object containing the headers.
- * @returns The extracted token or undefined if no token is found.
- * @throws An unauthorizedError if an unsupported token type is provided.
+ * Default token extraction from Authorization header
+ * Only supports Bearer token scheme
+ *
+ * @param request - HTTP request object
+ * @returns Extracted token or undefined
  */
-const defaultGetToken: NonNullable<OIDCPluginOptions['getToken']> = ({
+const defaultGetToken: NonNullable<BetterAuthPluginOptions['getToken']> = ({
 	request
 }: any) => {
-	// Extract the token from the Authorization header
 	const header = request.headers.get('authorization');
-	if (!header) {
-		return; // No token found
-	}
-	// Currently, we only support the Bearer token.
+	if (!header) return;
+
 	const [type, token] = header.split(' ');
 	if (type !== 'Bearer') {
 		throw unauthorizedError(`Unsupported token type provided: "${type}"`);
 	}
-	return token; // Return the extracted token
+
+	return token;
 };

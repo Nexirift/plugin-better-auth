@@ -1,31 +1,34 @@
-![NPM Version](https://img.shields.io/npm/v/%40nexirift%2Fplugin-oidc)
-![NPM License](https://img.shields.io/npm/l/%40nexirift%2Fplugin-oidc)
-![NPM Downloads](https://img.shields.io/npm/dt/%40nexirift%2Fplugin-oidc)
+![NPM Version](https://img.shields.io/npm/v/%40nexirift%2Fplugin-better-auth)
+![NPM License](https://img.shields.io/npm/l/%40nexirift%2Fplugin-better-auth)
+![NPM Downloads](https://img.shields.io/npm/dt/%40nexirift%2Fplugin-better-auth)
 
-# plugin-oidc
+# plugin-better-auth
 
-A basic [GraphQL Yoga](https://github.com/dotansimha/graphql-yoga) plugin that
-adds functionality to authorize users using an OpenID Connect compatible
-service.
+**Requires the Bearer plugin to be enabled in the authentication server.**
+
+A GraphQL Yoga plugin that provides seamless user authorization using the Better Auth solution.
 
 ## How does it work?
 
-This plugin checks an access token from the `Authentication` header with an
-OpenID Connect compatible server to verify if it's valid using the `introspect`
-endpoint. Additionally, it passes back the response info, which includes
-information like the `preferred_username`, `scope`, `email`, etc. The provided
-information can then be used in the GraphQL Yoga server to identify users, such
-as storing them in a database based on ID.
+This plugin implements the official Better Auth client to handle session and user authentication. It:
+
+1. Extracts the auth token from the request header
+2. Creates a new client instance with the token
+3. Retrieves session and user data via getSession()
+4. Returns an authenticated class instance with the user context
+
+## Features
+
+- Integrated Better Auth client methods
+- Role-based access control via allowedRoles configuration
+- Optional authentication requirements with requireAuth flag
+- Automatic session handling and user context management
 
 ## Example
 
-Please see [here](https://github.com/Nexirift/plugin-oidc-example) for an
-example of how to use the project.
+For a complete implementation example, see the [demo repository](https://github.com/Nexirift/plugin-better-auth-example).
 
 ## Credits
 
-Disclaimer: This plugin was based off of the plugin-jwt source code.
-
--   [GraphQL Yoga](https://github.com/dotansimha/graphql-yoga)
--   [keycloak-backend](https://github.com/BackendStack21/keycloak-backend)
--   [plugin-jwt](https://github.com/dotansimha/graphql-yoga/tree/main/packages/plugins/jwt)
+- [GraphQL Yoga](https://github.com/dotansimha/graphql-yoga)
+- [plugin-oidc](https://github.com/Nexirift/plugin-oidc)

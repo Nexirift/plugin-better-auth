@@ -1,8 +1,8 @@
 {
-	"name": "@nexirift/plugin-oidc",
-	"version": "1.0.3",
+	"name": "@nexirift/plugin-better-auth",
+	"version": "1.0.0",
 	"type": "commonjs",
-	"description": "Plugin for GraphQL Yoga that adds OpenID Connect authorization.",
+	"description": "An experimental plugin for GraphQL Yoga that adds Better Auth functionality.",
 	"author": "Nexirift",
 	"license": "MIT",
 	"engines": {
@@ -13,14 +13,14 @@
 		"build": "bunx tsc"
 	},
 	"dependencies": {
-		"axios": "^1.7.7",
-		"graphql-yoga": "^5.7.0",
-		"redis": "^4.7.0"
+		"better-auth": "^1.1.18",
+		"graphql-yoga": "^5.11.0"
 	},
 	"devDependencies": {
-		"graphql": "^16.9.0",
-		"graphql-scalars": "^1.23.0",
-		"typescript": "^5.6.2"
+		"@types/bun": "^1.2.2",
+		"graphql": "^16.10.0",
+		"graphql-scalars": "^1.24.1",
+		"typescript": "^5.7.3"
 	},
 	"publishConfig": {
 		"directory": "dist",
