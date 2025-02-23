@@ -3,6 +3,7 @@ import { BetterAuthClientPlugin, createAuthClient } from 'better-auth/client';
 import { adminClient } from 'better-auth/client/plugins';
 import { GraphQLError } from 'graphql';
 import { BetterAuth } from './class';
+import { createClient } from 'redis';
 
 export type BetterAuthPluginOptions = BetterAuthPluginOptionsBase;
 
@@ -15,6 +16,17 @@ export interface BetterAuthPluginOptionsBase {
 	 * @default process.env.BETTER_AUTH_URL
 	 */
 	baseURL?: string;
+
+	/**
+	 * The Redis client to use for caching token payloads.
+	 */
+	redis: ReturnType<typeof createClient>;
+
+	/**
+	 * The prefix to use for the Redis cache keys.
+	 * @default 'tokens'
+	 */
+	cachePrefix?: string;
 
 	/**
 	 * Plugins to pass down to the Better Auth client
@@ -78,15 +90,11 @@ export function useBetterAuth(options: BetterAuthPluginOptions): Plugin {
 	const {
 		baseURL = process.env.BETTER_AUTH_URL,
 		plugins,
+		allowedRoles = [],
 		suppressRoleWarning = false,
 		extendContextField = 'auth',
-		allowedRoles = [],
 		requireAuth = false,
 		messages = {
-			invalidToken: 'The provided access token is invalid.',
-			expiredToken: 'An invalid or expired access token was provided.',
-			invalidPermissions:
-				'You do not have the necessary permissions to access this resource.',
 			authRequired: 'Authentication is required to access this resource.'
 		},
 		getToken = defaultGetToken
@@ -111,59 +119,7 @@ export function useBetterAuth(options: BetterAuthPluginOptions): Plugin {
 			const token = await getToken({ request, serverContext, url });
 
 			if (token != null) {
-				try {
-					// Initialize auth client with provided token
-					const client = createAuthClient({
-						baseURL,
-						plugins,
-						fetchOptions: {
-							auth: {
-								type: 'Bearer',
-								token: token
-							}
-						}
-					});
-
-					// Fetch and validate current session
-					const { data } = await client.getSession();
-
-					if (!data?.session) {
-						throw unauthorizedError(messages.invalidToken);
-					}
-
-					// Role-based access control check
-					if (allowedRoles?.length > 0) {
-						type UserWithRole = ReturnType<
-							typeof createAuthClient<{
-								plugins: [ReturnType<typeof adminClient>];
-							}>
-						>['$Infer']['Session']['user'];
-
-						const user = data.user as UserWithRole;
-						const userRole = user.role || 'user';
-
-						if (!allowedRoles.includes(userRole)) {
-							throw unauthorizedError(
-								messages.invalidPermissions
-							);
-						}
-					}
-
-					// Store authenticated session for context building
-					payloadByRequest.set(
-						request,
-						new BetterAuth({
-							client,
-							session: data.session,
-							user: data.user
-						})
-					);
-				} catch (ex) {
-					if (ex instanceof GraphQLError) {
-						throw ex;
-					}
-					throw unauthorizedError(messages.invalidToken);
-				}
+				await authorize(options, token, payloadByRequest, request);
 			} else if (requireAuth) {
 				throw unauthorizedError(messages.authRequired);
 			}
@@ -185,6 +141,125 @@ export function useBetterAuth(options: BetterAuthPluginOptions): Plugin {
 			}
 		}
 	};
+}
+
+export async function authorize(
+	options: BetterAuthPluginOptions,
+	token: string,
+	payloadByRequest: WeakMap<Request, BetterAuth | string> | null = null,
+	request: Request | null = null
+): Promise<BetterAuth | void> {
+	// Initialize options with defaults
+	const {
+		baseURL = process.env.BETTER_AUTH_URL,
+		redis,
+		cachePrefix = 'tokens',
+		plugins,
+		messages = {
+			invalidToken: 'The provided access token is invalid.',
+			expiredToken: 'An invalid or expired access token was provided.',
+			invalidPermissions:
+				'You do not have the necessary permissions to access this resource.',
+			authRequired: 'Authentication is required to access this resource.'
+		},
+		allowedRoles = []
+	} = options;
+
+	const cacheKey = `${cachePrefix}:${token}`;
+
+	// Initialize auth client with provided token
+	const client = createAuthClient({
+		baseURL,
+		plugins,
+		fetchOptions: {
+			auth: {
+				type: 'Bearer',
+				token: token
+			}
+		}
+	});
+
+	// Check if token exists in Redis cache
+	const cachedData = await redis.get(cacheKey);
+
+	if (!cachedData) {
+		try {
+			// Fetch and validate current session
+			const { data } = await client.getSession();
+
+			if (!data?.session) {
+				throw unauthorizedError(messages.invalidToken);
+			}
+
+			// Store token content in Redis with expiration
+			await redis.setEx(cacheKey, 5, JSON.stringify(data));
+
+			return handleAuthData(
+				data,
+				client,
+				allowedRoles,
+				messages,
+				payloadByRequest,
+				request
+			);
+		} catch {
+			throw unauthorizedError(messages.invalidToken);
+		}
+	}
+
+	try {
+		const data = JSON.parse(cachedData) as BetterAuth;
+		return handleAuthData(
+			data,
+			client,
+			allowedRoles,
+			messages,
+			payloadByRequest,
+			request
+		);
+	} catch (ex) {
+		if (ex instanceof GraphQLError) {
+			throw ex;
+		}
+		throw unauthorizedError(messages.invalidToken);
+	}
+}
+
+function handleAuthData(
+	data: BetterAuth,
+	client: any,
+	allowedRoles: string[],
+	messages: any,
+	payloadByRequest: WeakMap<Request, BetterAuth | string> | null,
+	request: Request | null
+): BetterAuth {
+	// Role-based access control check
+	if (allowedRoles.length > 0) {
+		type UserWithRole = ReturnType<
+			typeof createAuthClient<{
+				plugins: [ReturnType<typeof adminClient>];
+			}>
+		>['$Infer']['Session']['user'];
+
+		const user = data.user as UserWithRole;
+		const userRole = user.role || 'user';
+
+		if (!allowedRoles.includes(userRole)) {
+			throw unauthorizedError(messages.invalidPermissions);
+		}
+	}
+
+	const auth = new BetterAuth({
+		client,
+		session: data.session!,
+		user: data.user
+	});
+
+	if (payloadByRequest && request) {
+		payloadByRequest.set(request, auth);
+	}
+
+	return auth;
 }
 
 /**
