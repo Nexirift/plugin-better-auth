@@ -1,6 +1,6 @@
 {
 	"name": "@nexirift/plugin-better-auth",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"type": "commonjs",
 	"description": "An experimental plugin for GraphQL Yoga that adds Better Auth functionality.",
 	"author": "Nexirift",
