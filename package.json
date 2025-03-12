@@ -13,6 +13,7 @@
 		"build": "bunx tsc"
 	},
 	"dependencies": {
+		"@nexirift/plugin-better-auth": "^1.0.1",
 		"better-auth": "^1.1.18",
 		"graphql-yoga": "^5.11.0",
 		"redis": "^4.7.0"
