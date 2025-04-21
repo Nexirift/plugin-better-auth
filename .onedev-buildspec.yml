@@ -1,0 +1,58 @@
+version: 39
+jobs:
+    - name: Pull from GitHub
+      steps:
+          - !PullRepository
+            name: pull
+            remoteUrl: https://github.com/Nexirift/plugin-better-auth
+            refs: refs/heads/* refs/tags/*
+            withLfs: true
+            force: true
+            condition: ALL_PREVIOUS_STEPS_WERE_SUCCESSFUL
+      retryCondition: never
+      maxRetries: 3
+      retryDelay: 30
+      timeout: 14400
+    - name: Build and publish
+      steps:
+          - !CheckoutStep
+            name: checkout
+            cloneCredential: !DefaultCredential {}
+            withLfs: true
+            withSubmodules: true
+            cloneDepth: 1
+            condition: ALL_PREVIOUS_STEPS_WERE_SUCCESSFUL
+          - !CommandStep
+            name: publish
+            runInContainer: true
+            image: imbios/bun-node:23-alpine-git
+            interpreter: !DefaultInterpreter
+                commands: |
+                    # Install the packages
+                    bun i
+
+                    # Use @@ to reference scope in job commands to avoid being interpreted as variable
+                    npm config set @@nexirift:registry https://code.nexirift.com/dev/~npm/
+
+                    # Use job token to tell OneDev the build publishing the package
+                    # Job secret 'access-token' should be defined in project build setting as an access token with package write permission
+                    npm config set -- '//code.nexirift.com/dev/~npm/:_authToken' "@job_token@:@secret:access-token@"
+
+                    # Set version information
+                    npm config set git-tag-version=false
+                    npm version 0.0.1-@branch@.@commit_hash@
+
+                    # Publish to the registry
+                    npm publish --registry https://code.nexirift.com/dev/~npm/
+            registryLogins:
+                - registryUrl: https://code.nexirift.com/dev/~npm/
+                  userName: admin
+                  passwordSecret: access-token
+            useTTY: true
+            condition: ALL_PREVIOUS_STEPS_WERE_SUCCESSFUL
+      triggers:
+          - !BranchUpdateTrigger {}
+      retryCondition: never
+      maxRetries: 3
+      retryDelay: 30
+      timeout: 14400
