@@ -19,14 +19,23 @@ export interface BetterAuthPluginOptionsBase {
 
 	/**
 	 * The Redis client to use for caching token payloads.
+	 * If not provided, no caching will be used.
 	 */
-	redis: ReturnType<typeof createClient>;
+	redis?: ReturnType<typeof createClient>;
 
 	/**
 	 * The prefix to use for the Redis cache keys.
 	 * @default 'tokens'
+	 * Only used when redis client is provided.
 	 */
 	cachePrefix?: string;
+	
+	/**
+	 * Cache expiration time in seconds.
+	 * @default 5
+	 * Only used when redis client is provided.
+	 */
+	cacheExpiration?: number;
 
 	/**
 	 * Plugins to pass down to the Better Auth client
@@ -154,6 +163,7 @@ export async function authorize(
 		baseURL = process.env.BETTER_AUTH_URL,
 		redis,
 		cachePrefix = 'tokens',
+		cacheExpiration = 5,
 		plugins,
 		messages = {
 			invalidToken: 'The provided access token is invalid.',
@@ -164,8 +174,6 @@ export async function authorize(
 		},
 		allowedRoles = []
 	} = options;
-
-	const cacheKey = `${cachePrefix}:${token}`;
 
 	// Initialize auth client with provided token
 	const client = createAuthClient({
@@ -179,6 +187,32 @@ export async function authorize(
 		}
 	});
 
+	// If Redis is not provided, skip caching logic
+	if (!redis) {
+		try {
+			// Fetch and validate current session
+			const { data } = await client.getSession();
+
+			if (!data?.session) {
+				throw unauthorizedError(messages.invalidToken);
+			}
+
+			return handleAuthData(
+				data,
+				client,
+				allowedRoles,
+				messages,
+				payloadByRequest,
+				request
+			);
+		} catch {
+			throw unauthorizedError(messages.invalidToken);
+		}
+	}
+
+	// Redis caching logic (only reached if redis is provided)
+	const cacheKey = `${cachePrefix}:${token}`;
+	
 	// Check if token exists in Redis cache
 	const cachedData = await redis.get(cacheKey);
 
@@ -192,7 +226,7 @@ export async function authorize(
 			}
 
 			// Store token content in Redis with expiration
-			await redis.setEx(cacheKey, 5, JSON.stringify(data));
+			await redis.setEx(cacheKey, cacheExpiration, JSON.stringify(data));
 
 			return handleAuthData(
 				data,
