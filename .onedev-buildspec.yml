@@ -25,11 +25,15 @@ jobs:
           - !CommandStep
             name: publish
             runInContainer: true
-            image: imbios/bun-node:23-alpine-git
+            image: node:20-slim
             interpreter: !DefaultInterpreter
                 commands: |
+                    # for pnpm
+                    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+                    corepack enable
+
                     # Install the packages
-                    bun i
+                    pnpm i --frozen-lockfile
 
                     # Use @@ to reference scope in job commands to avoid being interpreted as variable
                     npm config set @@nexirift:registry https://code.nexirift.com/dev/~npm/
