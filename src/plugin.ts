@@ -4,6 +4,7 @@ import { adminClient } from 'better-auth/client/plugins';
 import { GraphQLError } from 'graphql';
 import { BetterAuth } from './class';
 import { createClient } from 'redis';
+import Redis from 'ioredis';
 
 export type BetterAuthPluginOptions = BetterAuthPluginOptionsBase;
 
@@ -21,7 +22,7 @@ export interface BetterAuthPluginOptionsBase {
 	 * The Redis client to use for caching token payloads.
 	 * If not provided, no caching will be used.
 	 */
-	redis?: ReturnType<typeof createClient>;
+	redis?: ReturnType<typeof createClient> | Redis;
 
 	/**
 	 * The prefix to use for the Redis cache keys.
@@ -29,7 +30,7 @@ export interface BetterAuthPluginOptionsBase {
 	 * Only used when redis client is provided.
 	 */
 	cachePrefix?: string;
-	
+
 	/**
 	 * Cache expiration time in seconds.
 	 * @default 5
@@ -130,7 +131,10 @@ export function useBetterAuth(options: BetterAuthPluginOptions): Plugin {
 			if (token != null) {
 				await authorize(options, token, payloadByRequest, request);
 			} else if (requireAuth) {
-				throw unauthorizedError(messages.authRequired);
+				throw unauthorizedError(
+					messages.authRequired,
+					'RESOURCE_AUTH_REQUIRED'
+				);
 			}
 		},
 
@@ -194,7 +198,7 @@ export async function authorize(
 			const { data } = await client.getSession();
 
 			if (!data?.session) {
-				throw unauthorizedError(messages.invalidToken);
+				throw unauthorizedError(messages.invalidToken, 'INVALID_TOKEN');
 			}
 
 			return handleAuthData(
@@ -206,13 +210,13 @@ export async function authorize(
 				request
 			);
 		} catch {
-			throw unauthorizedError(messages.invalidToken);
+			throw unauthorizedError(messages.invalidToken, 'INVALID_TOKEN');
 		}
 	}
 
 	// Redis caching logic (only reached if redis is provided)
 	const cacheKey = `${cachePrefix}:${token}`;
-	
+
 	// Check if token exists in Redis cache
 	const cachedData = await redis.get(cacheKey);
 
@@ -222,11 +226,17 @@ export async function authorize(
 			const { data } = await client.getSession();
 
 			if (!data?.session) {
-				throw unauthorizedError(messages.invalidToken);
+				throw unauthorizedError(messages.invalidToken, 'INVALID_TOKEN');
 			}
 
 			// Store token content in Redis with expiration
-			await redis.setEx(cacheKey, cacheExpiration, JSON.stringify(data));
+			// This *should* support both Redis and IOredis
+			await redis.set(
+				cacheKey,
+				JSON.stringify(data),
+				'EX',
+				cacheExpiration
+			);
 
 			return handleAuthData(
 				data,
@@ -236,8 +246,13 @@ export async function authorize(
 				payloadByRequest,
 				request
 			);
-		} catch {
-			throw unauthorizedError(messages.invalidToken);
+		} catch (error) {
+			console.error(
+				'Please report this error at https://github.com/Nexirift/plugin-better-auth/issues/new/choose!',
+				error
+			);
+			// Don't let the user know.
+			throw unauthorizedError(messages.invalidToken, 'INVALID_TOKEN');
 		}
 	}
 
@@ -255,7 +270,7 @@ export async function authorize(
 		if (ex instanceof GraphQLError) {
 			throw ex;
 		}
-		throw unauthorizedError(messages.invalidToken);
+		throw unauthorizedError(messages.invalidToken, 'INVALID_TOKEN');
 	}
 }
 
@@ -276,10 +291,14 @@ function handleAuthData(
 		>['$Infer']['Session']['user'];
 
 		const user = data.user as UserWithRole;
+		// @ts-ignore better-auth broke types again :/
 		const userRole = user.role || 'user';
 
 		if (!allowedRoles.includes(userRole)) {
-			throw unauthorizedError(messages.invalidPermissions);
+			throw unauthorizedError(
+				messages.invalidPermissions,
+				'INVALID_PERMISSIONS'
+			);
 		}
 	}
 
@@ -305,10 +324,12 @@ function handleAuthData(
  */
 function unauthorizedError(
 	message: string,
+	code?: string,
 	options?: Parameters<typeof createGraphQLError>[1]
 ) {
 	return createGraphQLError(message, {
 		extensions: {
+			code,
 			http: {
 				status: 401
 			}
@@ -332,7 +353,10 @@ const defaultGetToken: NonNullable<BetterAuthPluginOptions['getToken']> = ({
 
 	const [type, token] = header.split(' ');
 	if (type !== 'Bearer') {
-		throw unauthorizedError(`Unsupported token type provided: "${type}"`);
+		throw unauthorizedError(
+			`Unsupported token type provided: "${type}"`,
+			'UNSUPPORTED_TOKEN_TYPE'
+		);
 	}
 
 	return token;
